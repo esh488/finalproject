@@ -1,0 +1,377 @@
+---
+title: 'Final Project Technical Analysis'
+author: "Eaton Shao"
+date: "June 30, 2021"
+output:
+  html_document:
+    theme: cosmo
+    toc: yes
+    toc_float: yes
+  pdf_document:
+    toc: yes
+---
+# Abstract
+The Olympic Games has an ancient history but only recently has become what it is known as today within the past 200 years. In the beginning of the modern Olympics, competition was only limited to European nations but around the 1900s it became truly a world phenomenon. Often times a country's performance in the Olympics is a measure of their capability and aptitude of a nation, but how true is this?
+
+# Overview and Motivation
+
+As I was brainstorming research topics I was trying to find different data sets that had an interest in but none that really stood out to me. Many of which were very untidy/incomplete or had limited information with very few variables for each observation. When I stumbled upon the 120 years of Olympic history: athletes and results" data set on Kaggle I thought it was fitting due to the approching Olympic games in Tokyo this year and was reminded of this YouTube video: "https://youtu.be/J5i8gm7h8fE" I had seen a while back and wondered what other trends could be explored by analyzing this data.
+
+# Initial Questions:
+
+I felt like this was a good data set to utilize in my project due to the size and many variables such as ID, Names, Sex, Age, Weight, Height, Teams, spanning 120 years. There are 271116 observations with 15 columns. That alone I thought would be enough to use for the entirety of this data analysis. However it became clear that there are other factors that are outside of this data set such as the economy and size of each country with affect their performance in each Olympic game.
+
+Initially I was more focused on the aspect of each Country's performance and maybe looking at that of the individual athlete.
+
+The questions I had hoped to answer were:
+
+1. "Do countries with warmer/colder climates fare better in the games Summer/Winter Olympics?" 
+
+2. "Does the size of the athlete matter in different events? Which sports have the biggest/smallest athletes and which have the most variability of athlete size when it comes to success? Is there any trend over time that reflects this?"
+
+3. "Which Olympic sports have the most longevity of an athlete? What are the sports where athletes have the longest careers?"
+
+4. "Do countries that compete in their home city end up performing better?"
+
+Lastly, I wanted to build a predictive model that would've been able to make a prediction about the Tokyo 2020 Olympics to see who would come out on top but I wasn't really sure how to approach that. I managed to build a train a linear regression model to predicted the number of Gold Medals earned based on other existing factors.
+
+# Data:
+
+I used the following packages to wrangle/visualize the data
+
+```{r}
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(tidymodels)
+library(patchwork)
+```
+
+The data sets I used for this analysis were all from Kaggle. The first being the main focus of my analysis and the others I used to look for other factors involving the success of each country.
+```{r}
+athlete <- read_csv("athlete_events.csv")
+str(athlete)
+regions <- read_csv("noc_regions.csv")
+str(regions)
+```
+Going into this I was unaware of how much cleaning up I had to do to the data set. At the beginning I had not made sure that all of the missing values were taken care of and didn't make sure that each variable was the right of the right type. This made my exploritory analysis very difficult in the begining and gave me results that did not look right. I then went back and made sure to fix all my data before approaching again.
+
+```{r}
+athlete <- athlete %>% select(-Games)
+regions <- regions %>% select(-notes)
+```
+
+I found that each csv file also contained columns that were of duplicate information or just useless so I decided to just remove them using the select function and subtracting the columns that we didn't need like we learned in class.
+
+```{r}
+athlete <- athlete %>% left_join(regions, by = "NOC")
+head(athlete)
+colSums(is.na(athlete))
+```
+The next step was to left_join the region table with the athlete table because each "Team" name didn't necessarily correspond to a country name. By using the NOC code as a key I was able to make sure that each athlete would have a home country attributed to them.
+
+The data is still very untidy as seen especially with the Medal variable, athletes who had not won any kind of medal were given a missing value instead.
+
+```{r}
+gdp <- read_csv("gdp_data.csv")
+gdp <- gdp %>% select(NOC = "Code", Year, GDP, GDPPerCapita = "GDP-Per-Capita")
+
+population <- read_csv("WorldPopulation.csv")
+population <- population %>% 
+  pivot_longer(cols = 5:62, names_to = "Year", values_to = "Population") %>% 
+  mutate(Year = as.integer(Year)) %>% 
+  select(-c('Country','Indicator Name', 'Indicator Code')) %>% rename(NOC = "Country Code")
+
+gdp <- na.omit(gdp)
+population <- na.omit(population)
+head(gdp)
+head(population)
+
+colSums(is.na(gdp))
+colSums(is.na(population))
+
+```
+
+I loaded the next two data sets, although
+they had more variables assigned to each row I thought that it was only necessary to keep the ones pertaining to GDP and Population as those were the only variables I would be looking at. Both tables were wide so I needed to perse the values from every year into their own column so I could join each table back to the original data set.
+
+```{r}
+athlete <- athlete %>% left_join(population, by = c("NOC", "Year")) %>%
+  left_join(gdp, by = c("NOC", "Year"))
+head(athlete)
+```
+
+By joining each table by the NOC code and by the Year I was able to make sure there weren't any repeat observations
+
+```{r}
+athlete$Sex <- as.factor(athlete$Sex)
+athlete$Season <- as.factor(athlete$Season)
+athlete$Medal[is.na(athlete$Medal)] <- "No Medal"
+athlete$Medal <- as.factor(athlete$Medal) %>% 
+  factor(levels = c("Gold", "Silver", "Bronze", "No Medal"),
+          ordered=TRUE)
+
+athlete <- na.omit(athlete)
+colSums(is.na(athlete))
+```
+
+The next step was making sure that each variable got assigned the right type. The Medal variable was something I had a hard time with when using this data set. I was reluctant to parse the data into different variables each with their own count to avoid making the table wide. However I ended up doing it anyway when it became necessary for model fitting. Although most of my analysis goes around this, it would definitely be something I would have changed sooner looking back. 
+
+After I had all the columns of the right type I omitted the rows with missing values in either that were originally part of the athlete table like Height, Weight, Age ; but also missing information in the GDP and population tables. This would definitely skew my data to focus solely on the more developed countries who had the resources to record all this different type of information. Maybe another approach would have been to directly assign the missing variables what would be the averages of each column for that country?
+
+```{r}
+medal_count <- athlete %>% 
+  filter(Medal != "No Medal") %>% 
+  group_by(Name, Year, Event) %>% 
+  count(Medal) %>% 
+  pivot_wider(names_from = Medal, values_from  = n,  values_fill = 0 ) 
+
+athlete <- athlete %>% 
+  left_join(medal_count, by = c("Name", "Year", "Event")) %>% 
+  mutate_if(is.numeric,coalesce,0)
+
+```
+
+As stated above, the Medals variable was particularly hard to work with because each entry was qualitative rather than quantitative and contained a lot of empty data. Most observations didn't have any medals so that was something I really had to make sure I filtered out when doing my analysis. 
+
+# Exploratory Data Analysis
+
+## Question 1: "Do countries with warmer/colder climates fare better in the games Summer/Winter Olympics?" 
+
+```{r}
+athlete %>%
+  group_by(Year, Season) %>%
+  summarise(NumberOfParticipants = n()) %>%
+  ggplot(aes(x = Year, y = NumberOfParticipants)) +
+  geom_line(aes(color = Season))
+```
+
+First I decided to group each observation by Year and Season to count the number of participants in each Olympic game. There is definitely a big disparity between the number of participants in the Summer Olympics vs the Winter Olympics which raised my suspicion.
+
+Given that both Olympic games were held during the same year it seemed odd that so fewer people were participating in the Winter games when the Summer games had a lot more participants. Wouldn't people have to choose between competing for either the Summer or Winter Olympics? It had to be the case that there were some countries that just did not compete in the Winter Olympics to explain the gap.
+
+```{r}
+top10 <- athlete %>%
+  group_by(region) %>%
+  filter(Medal != "No Medal") %>%  
+  summarize(NumberOfMedals = length(Medal)) %>%
+  arrange(desc(NumberOfMedals)) %>%
+  ungroup() %>%
+  head(10)
+
+athlete %>% filter(region %in% top10$region, Medal != 'No Medal') %>% 
+  ggplot(aes(x=region, y = Medal, fill = Medal)) +
+  geom_bar(stat="identity") + coord_flip() + 
+  scale_fill_manual(values=c("gold1","gray70","gold4"))
+
+```
+Here I just decided to create a bar graph to help myself visualize the distribution of medals for the top performing countries. The United States is the clear powerhouse of the Olympics with more than half double the number of medals of any other country in the top 10. 
+
+All these countries are (arguably) rather well developed. With the exception maybe being China and Russia. This was confirming my idea that countries with the highest GDP-per-capita's are the ones who end up winning the most medals. The other exceptions made up for the fact that their populations were much bigger. The United States clearly benefited from both these factors making it the most successful
+
+```{r}
+winter_medals <- athlete %>%
+  filter(Season == "Winter", Medal != "No Medal") %>%
+  group_by(region) %>% 
+  summarise(NumberOfMedals = n()) %>%
+  arrange(desc(NumberOfMedals)) 
+
+map_winter <- map_data("world") %>% 
+  left_join(winter_medals, by = 'region')
+
+map_winter %>% ggplot(aes(x = long, y = lat, group = group)) + 
+  geom_polygon(aes(fill = NumberOfMedals), color = 'black') +scale_fill_gradient(low = 'lightblue', high = 'steelblue', na.value = 'grey')
+``` 
+
+```{r}
+summer_medals <- athlete %>%
+  filter(Season == "Summer", Medal != "No Medal") %>%
+  group_by(region) %>% 
+  summarise(NumberOfMedals = n()) %>%
+  arrange(desc(NumberOfMedals)) 
+
+map_summer <- map_data("world") %>% 
+  left_join(summer_medals, by = 'region')
+
+map_summer %>% ggplot(aes(x = long, y = lat, group = group)) + 
+  geom_polygon(aes(fill = NumberOfMedals), color = 'black') + scale_fill_gradient(low = 'lightsalmon', high = 'red', na.value = 'grey')
+```
+
+I was able to filter the countries by Season and medals received. One mistake I made early on was not filtering the medals that had not been given and that gave me incorrect data because the summarise function would count them anyway. This gave me counts that were in the thousands and included a lot more countries that would not have been included. Having the first graph helped me realize that this should not be the case and I went back and saw my error. 
+
+One thing I think I could have improved was the gradient on the world map. I couldn't find any colors that gave a clear in between shade given the low and high colors. I settled by picking 2 shades of the same color that weren't too far off from each other. Maybe if I had sequenced the count it would give clear defined colors? 
+
+## Question 2: "Does the size of the athlete matter in different events? Which sports have the biggest/smallest athletes and which have the most variability of athlete size when it comes to success? Is there any trend over time that reflects this?"
+
+```{r}
+mean_measurements <- athlete %>% group_by(Sport) %>%
+  summarise(Avg_Height = mean(Height), 
+            Avg_Weight = mean(Weight),
+            Avg_Age = mean(Age)) 
+            
+
+tallest <- mean_measurements %>% arrange(desc(Avg_Height)) %>% head(10) %>% .$Sport
+shortest <- mean_measurements %>% arrange(desc(Avg_Height)) %>% tail(10) %>% .$Sport
+
+heaviest <- mean_measurements %>% arrange(desc(Avg_Weight)) %>% head(10) %>% .$Sport
+lightest <- mean_measurements %>% arrange(desc(Avg_Weight)) %>% tail(10) %>% .$Sport
+
+oldest <-  mean_measurements %>% arrange(desc(Avg_Age)) %>% head(10) %>% .$Sport
+youngest <- mean_measurements %>% arrange(desc(Avg_Age)) %>% tail(10) %>% .$Sport
+
+
+tallest
+shortest
+heaviest
+lightest
+youngest
+```
+
+I started off by creating a aggregate table of every average characteristic for athletes in each sport. Then I got the list the top 10 Sports in each that fit that quality. I probably could have written a function due to how many times I did the same process for each list, but since they weren't long anyway I just found it easier to do it that way. The sports with the tallest members were : "Basketball, Volleyball, Beach Volleyball, Rowing, Water Polo, Handball,Baseball, Bobsleigh, Ice Hockey, Tennis"; the shortest were: "Table Tennis, Short Track Speed Skating, Ski Jumping, Triathlon, Diving, Figure Skating, Trampolining, Gymnastics, Synchronized Swimming." etc.
+
+There were a lot of repeats in the tallest, heaviest, and youngest lists and the same thing was seen with the shortest, lightest, and oldest lists. It should be obvious height and weight go together but what I didn't realize was that it was for the same reason why age was related to. The sports shown in the tallest, heaviest, and youngest lists are all physically intensive sports that require a lot of strength and endurance, which is why many of the athletes that compete in these sports are young and at their prime. When compared to the shortest, lightest, and oldest lists, those require more skill and less physical excersion which is probably why there are more athletes who can compete for longer.
+
+```{r}
+tallplot <- athlete %>% filter(Sport %in% tallest) %>% group_by(Year, Sport) %>% summarize(Avg_Height = mean(Height)) %>% ggplot(aes(x = Year, y = Avg_Height)) + geom_line(aes(color = Sport)) 
+
+heavyplot <- athlete %>% filter(Sport %in% heaviest) %>% group_by(Year, Sport) %>% summarize(Avg_Weight = mean(Weight)) %>% ggplot(aes(x = Year, y = Avg_Weight)) + geom_line(aes(color = Sport))
+
+oldplot <- athlete %>% filter(Sport %in% oldest) %>% group_by(Year, Sport) %>% summarize(Avg_Age = mean(Age)) %>% ggplot(aes(x = Year, y = Avg_Age)) + geom_line(aes(color = Sport))
+
+shortplot <- athlete %>% filter(Sport %in% shortest) %>% group_by(Year, Sport) %>% summarize(Avg_Height = mean(Height)) %>% ggplot(aes(x = Year, y = Avg_Height)) + geom_line(aes(color = Sport))
+
+lightplot <- athlete %>% filter(Sport %in% lightest) %>% group_by(Year, Sport) %>% summarize(Avg_Weight = mean(Weight)) %>% ggplot(aes(x = Year, y = Avg_Weight)) + geom_line(aes(color = Sport)) 
+
+youngplot <- athlete %>% filter(Sport %in% heaviest) %>% group_by(Year, Sport) %>% summarize(Avg_Age = mean(Age)) %>% ggplot(aes(x = Year, y = Avg_Age)) + geom_line(aes(color = Sport)) 
+
+tallplot + shortplot 
+heavyplot + lightplot 
+oldplot + youngplot
+```
+I decided to only pair the graphs that were evaluated by the same attribute using the patchwork library, if I were to try to do any more it would've resulted in the graphs being unreadable due to the legend on the side taking up too much space. Some of the sports seen aren't a good representation of the tallest/heaviest athletes due to the fact that there are only a few participants of that sport. Maybe a better way to have approached this would be to filter sports that have appeared at least 100 times to get a better idea of the trends involving changing demographics of athletes.
+
+## Question 3: "Which Olympic sports have the most longevity of an athlete? What are the sports where athletes have the longest careers?"
+
+```{r}
+athlete %>% 
+  group_by(Name,Sport) %>% 
+  summarise(Carreer = paste(min(Year), max(Year), sep = "-"),
+             Span = n_distinct(Year)) %>% 
+  arrange(desc(Span)) %>%
+  head(20)
+```
+This turned out to be one of the easiest questions to answer in addition to the one which sparked my interest to use this data set in the first place. I used the same technique as the Batting data set we used in lab5 to create new columns for each athlete's career and "lifespan". The person with the longest history in the Olympics being Ian Millar competing in Equestrianism. Most of the Sports seen here are the same/similar to those seen in the oldest list for Question 2. This makes sense since the people with the most longevity are probably the ones who can still perform at an old age and don't require much intensity.
+
+## Question 4: "Do countries that compete in their home city end up performing better?"
+
+This was one of the questions I had in my project proposal that turned how to be a more defining factor that I had initially thought. This is a real phenomenon that is seen not only in the Olympics but with sports teams and other competitions. Although many argue about the real reason behind it, it doesn't take away from the fact that it still exists.
+
+```{r}
+athlete %>% filter(Season == "Summer", Year %in% 1984:2016) %>% .$City %>% unique()
+
+athlete %>% 
+  filter(Season == "Summer", Year %in% 1984:2016, region %in% c('Spain', 'UK', 'Austrailia', 'USA', 'China', 'Brazil', 'South Korea'), Medal != "No Medal") %>% 
+  group_by(region, Year) %>% summarise(NumberOfMedals = length(Medal)) %>% 
+  ggplot(aes(x = Year, y = NumberOfMedals)) + geom_line(aes(color = region)) + 
+  geom_vline(xintercept = seq(1984, 2016, 4), linetype="dashed")
+
+```
+First I was able to filter all the past 10 Olympic years and create a list of each Host city.
+Then I just further filtered each country corresponding to it's Host city in that list and then count the number of medals won by each country for that year. I put in a dotted line to mark each Olympic year and used color to identify each country. One thing I wish I would've done was find a table that would correspond each city to the Country it's in but I couldn't find anything like that. Another issue I had was that Greece would not appear when called and the city of Athens was called "Athina". 
+
+Even so we can see that for the most part, for the years on which countries competed within their own city, they won more medals than the previous year.
+
+## Question 5: "How big of a role does population and GDP play when predicting the success of a country in the Olympics?"
+
+Although this was hinted at with the first question. It's time to see how much of a role each one of these factors has when it comes to the number of medals won. 
+
+First I filtered by country, year, and population size/GDP-per-capita but only used the data from the Summer Olympics. I plotted a scatter plot and fit a regression line to see that there definitely was a positive correlation between those two factors. 
+
+```{r}
+poplm <- athlete %>% 
+  group_by(region, Year, Population) %>% 
+  filter(Season == "Summer", Medal != "No Medal", ) %>% 
+  count(Medal) %>% 
+  rename(NumberOfMedals = n) %>%
+  ggplot(aes(x = Population, y = NumberOfMedals)) + 
+  geom_text(aes(label= region)) + geom_point() + geom_jitter() + 
+  geom_smooth(method = lm) + facet_wrap(~Medal) 
+
+```
+
+```{r}}
+athlete %>% 
+  group_by(region ,NOC, Year, GDPPerCapita) %>% 
+  filter(Season == "Summer" , Medal != "No Medal") %>% 
+  count(Medal) %>% 
+  rename(NumberOfMedals = n) %>% 
+  ggplot(aes(x = GDPPerCapita, y = NumberOfMedals)) + 
+  geom_text(aes(label= region)) + geom_point() + geom_jitter() + 
+  geom_smooth(method = lm) + facet_wrap(~Medal)
+
+```
+
+Obviously the United States is the standout winner when it comes to Olympic success but this also showed some interesting aspects. The fact that China and India are outliers when it comes to number of medals plotted against population yet there aren't many outliers in the GDP plot might suggest that population is a bigger factor than GDP when it comes to success.
+
+```{r}
+  athlete <- athlete %>% group_by(region,Year) %>% 
+             mutate(GoldCount = sum(Gold),
+                    SilverCount = sum(Silver),
+                    BronzeCount = sum(Bronze),
+                    TotalCount =sum(Gold+Silver+Bronze))
+  
+```
+
+Here is when I decided to use the wide table I implemented at the beginning to use for regression.
+
+```{r}
+mod <- lm(TotalCount ~ Population, data = athlete)
+summary(mod)$coefficients
+
+mod <- lm(TotalCount ~ GDPPerCapita , data = athlete)
+summary(mod)$coefficients
+```
+Both linear models are shown to be a good fit.
+
+## Question 6: "Can we build a model that can predict the number of gold medals won based on other factors?"
+
+```{r}
+
+athlete_splits <- initial_split(athlete, prop = 0.8)
+
+train <- training(athlete_splits)
+test <- testing(athlete_splits)
+
+mod_lm <- linear_reg(mode = "regression") %>% 
+  set_engine("lm") %>%
+  fit(GoldCount ~ Population + GDPPerCapita + SilverCount + BronzeCount, data = train)
+
+mod_lm %>% predict(new_data = train) %>% 
+  mutate(GoldCount = train$GoldCount) %>% 
+  rmse(truth = GoldCount, estimate = .pred)
+
+mod_lm %>% predict(new_data = test) %>% 
+  mutate(GoldCount = test$GoldCount) %>% 
+  rmse(truth = GoldCount, estimate = .pred)
+```
+My original goal was to make a model which would be able to predict the number of gold medals a country would earn based on it's GDP-per-capita, opulation, number of silver medals and number of bronze medals.
+
+This could potentially be a good estimator, the model is not overfit and the testing data is very close to the training data.
+
+# Final Analysis
+
+It is clear that there exist external factors that lead to a Countries success with GPD and population being the biggest factor of all of them. Most of my exploratory analysis was focused on going through the data set itself and trying to find trends within the athletes and countries without realizing that it's more relevant to find out what factors are causing this success in the first place rather than just the things that show success, still it was an important part of understanding the data set. Most of my data analysis was spent looking at graphs but a more compelling exercise might be to write more prediction models to find out the likelihood of lets say, the probability that an athlete competing in their host country wins a medal. I choose to leave only the most relevant parts of my exploratory analysis within my blog post which I felt had the most correlation to the success of a country.
+
+
+# Related Work
+
+https://www.bloomberg.com/graphics/2016-olympics-usoc-return-on-investment/
+https://www.rd.com/list/13-olympic-moments-that-changed-history/
+https://fivethirtyeight.com/features/is-there-home-field-advantage-at-the-olympics/
+
+
+# Links to Datasets
+https://www.kaggle.com/heesoo37/120-years-of-olympic-history-athletes-and-results
+https://www.kaggle.com/jonscheaffer/worldwide-gdp-history-19602016
+https://www.kaggle.com/centurion1986/countries-population
+
